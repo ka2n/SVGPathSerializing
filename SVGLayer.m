@@ -8,7 +8,8 @@ CGRect _AdjustCGRectForContentsGravity(CGRect aRect, CGSize aSize, NSString *aGr
     NSMutableArray *_untouchedPaths;
     NSMapTable *_pathAttributes;
     NSMutableArray *_shapeLayers;
-
+    BOOL _interfaceBuilder;
+    
 #ifdef DEBUG
     dispatch_source_t _fileWatcher;
 #endif
@@ -20,6 +21,12 @@ CGRect _AdjustCGRectForContentsGravity(CGRect aRect, CGSize aSize, NSString *aGr
 #if TARGET_OS_IPHONE
     self.shouldRasterize = YES;
     self.rasterizationScale = [[UIScreen mainScreen] scale];
+#endif
+    
+#if TARGET_INTERFACE_BUILDER
+    _interfaceBuilder = YES;
+#else
+    _interfaceBuilder = TARGET_OS_SIMULATOR; // TODO: Detect interface builder in runtime.
 #endif
 }
 
@@ -86,35 +93,34 @@ CGRect _AdjustCGRectForContentsGravity(CGRect aRect, CGSize aSize, NSString *aGr
 
 - (void)loadSVGNamed:(NSString * const)aFileName
 {
-#if !TARGET_INTERFACE_BUILDER
-    NSString * const path = [[NSBundle mainBundle] pathForResource:aFileName ofType:@"svg"];
-    NSParameterAssert(!aFileName || path);
-#else
-    NSString *path = nil;
-    NSPredicate * const pred = [NSPredicate predicateWithFormat:@"lastPathComponent LIKE[c] %@",
-                                [aFileName stringByAppendingPathExtension:@"svg"]];
-    NSString * const sourceDirs = [[NSProcessInfo processInfo] environment][@"IB_PROJECT_SOURCE_DIRECTORIES"];
-    for(__strong NSString *dir in [sourceDirs componentsSeparatedByString:@":"]) {
-        // Go up the hiearchy until we don't find an xcodeproj
-        NSString *projectDir = dir;
-        NSPredicate *xcodePredicate = [NSPredicate predicateWithFormat:@"self ENDSWITH[c] %@", @".xcodeproj"];
-        do {
-            NSArray *contents = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:NULL];
-            if([[contents filteredArrayUsingPredicate:xcodePredicate] count] > 0) {
-                projectDir = dir;
+    NSString *path = [[NSBundle mainBundle] pathForResource:aFileName ofType:@"svg"];
+    
+    if (path == nil && _interfaceBuilder) {
+        NSPredicate * const pred = [NSPredicate predicateWithFormat:@"lastPathComponent LIKE[c] %@",
+                                    [aFileName stringByAppendingPathExtension:@"svg"]];
+        NSString * const sourceDirs = [[NSProcessInfo processInfo] environment][@"IB_PROJECT_SOURCE_DIRECTORIES"];
+        for(__strong NSString *dir in [sourceDirs componentsSeparatedByString:@":"]) {
+            // Go up the hiearchy until we don't find an xcodeproj
+            NSString *projectDir = dir;
+            NSPredicate *xcodePredicate = [NSPredicate predicateWithFormat:@"self ENDSWITH[c] %@", @".xcodeproj"];
+            do {
+                NSArray *contents = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:NULL];
+                if([[contents filteredArrayUsingPredicate:xcodePredicate] count] > 0) {
+                    projectDir = dir;
+                }
+                NSLog(@"%@", dir);
+            } while(![(dir = dir.stringByDeletingLastPathComponent) isEqual:@"/"]);
+            
+            NSArray * const results = [[[NSFileManager defaultManager] subpathsAtPath:projectDir]
+                                       filteredArrayUsingPredicate:pred];
+            if([results count] > 0) {
+                path = [projectDir stringByAppendingPathComponent:results[0]];
+                break;
             }
-            NSLog(@"%@", dir);
-        } while(![(dir = dir.stringByDeletingLastPathComponent) isEqual:@"/"]);
-
-        NSArray * const results = [[[NSFileManager defaultManager] subpathsAtPath:projectDir]
-                                   filteredArrayUsingPredicate:pred];
-        if([results count] > 0) {
-            path = [projectDir stringByAppendingPathComponent:results[0]];
-            break;
         }
     }
-#endif
     
+    NSParameterAssert(!aFileName || path);
     self.svgSource = [NSString stringWithContentsOfFile:path
                                            usedEncoding:NULL
                                                   error:nil];
@@ -175,12 +181,12 @@ CGRect _AdjustCGRectForContentsGravity(CGRect aRect, CGSize aSize, NSString *aGr
 - (void)layoutSublayers
 {
     [super layoutSublayers];
-
-#if !TARGET_OS_IPHONE && TARGET_INTERFACE_BUILDER
-    self.sublayerTransform = CATransform3DTranslate(CATransform3DMakeScale(1, -1, 1),
-                                                    0, -self.bounds.size.height, 0);
-#endif
-
+    
+    if (!TARGET_OS_IPHONE && _interfaceBuilder) {
+        self.sublayerTransform = CATransform3DTranslate(CATransform3DMakeScale(1, -1, 1),
+                                                        0, -self.bounds.size.height, 0);
+    }
+    
     CGSize const size  = [self preferredFrameSize];
     CGRect const frame = _AdjustCGRectForContentsGravity(self.bounds, size, self.contentsGravity);
 
